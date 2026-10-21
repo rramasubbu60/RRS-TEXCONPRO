@@ -423,6 +423,27 @@ async function boot(){
 }
 if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
 
+/* ---------- "Install app" helper ---------- */
+let installEvt=null;
+window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvt=e;render()});
+window.addEventListener("appinstalled",()=>{installEvt=null;toast("RRS TEXCONPRO installed. Open it from your home screen.");render()});
+const isInstalled=()=>matchMedia("(display-mode: standalone)").matches||navigator.standalone===true;
+function installPanel(){
+  if(isInstalled())return "";
+  let dismissed=false;try{dismissed=localStorage.getItem("rrs_install_hide")==="1"}catch(e){}
+  if(dismissed&&!installEvt)return "";
+  const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
+  const inApp=/; wv\)|FBAN|FBAV|Instagram|WhatsApp|Line\//.test(navigator.userAgent);
+  return `<section class="panel" id="installP"><div class="spread"><h2>Install the app on this phone</h2><button class="linkbtn small" id="instHide">Hide</button></div>
+  ${installEvt?`<p class="small muted" style="margin:0">Adds the RRS TEXCONPRO icon to your home screen. It opens full-screen like any other app.</p><button class="btn pri" id="instGo">Install app</button>`
+  :ios?`<p class="small" style="margin:0">In Safari, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</p>`
+  :`<p class="small" style="margin:0">${inApp?"You've opened this inside another app. Tap <b>⋮</b> › <b>Open in Chrome</b> first, then: ":""}In Chrome, tap <b>⋮</b> (top right) › <b>Add to Home screen</b> › <b>Install</b>.</p><p class="small muted" style="margin:0">If you don't see Install, use the app for half a minute and check the ⋮ menu again.</p>`}</section>`;
+}
+function wireInstall(){
+  const g=$("#instGo");if(g)g.onclick=async()=>{const e=installEvt;if(!e)return;installEvt=null;e.prompt();try{await e.userChoice}catch(_){}render()};
+  const h=$("#instHide");if(h)h.onclick=()=>{try{localStorage.setItem("rrs_install_hide","1")}catch(e){}const p=$("#installP");if(p)p.remove()};
+}
+
 /* ---------- derived data ---------- */
 const arr=c=>Object.values(S[c]);
 const millName=id=>S.mills[id]?.name||"Unknown mill";
@@ -491,6 +512,7 @@ VIEWS.home=()=>{
   return{title:"RRS TEXCONPRO",html:`
   <div class="today"><span class="eyebrow">${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][d.getDay()]} · FY ${fyOf(t)}</span><span class="d">${fmtD(t)}</span>${s.consultantName?`<span class="muted">Good ${d.getHours()<12?"morning":d.getHours()<17?"afternoon":"evening"}, ${esc(s.consultantName)}</span>`:""}</div>
   <button class="btn pri block hero-btn" ${goAttr("visitForm",{})}>+ Record Today's Visit</button>
+  ${installPanel()}
   ${isEmpty?`<div class="panel"><h2>Getting started</h2><p class="muted" style="margin:0">Add the mills you consult for. Each mill keeps its own visits, process parameters, quality results, production figures, machines, photos and best practices. Start by adding your first mill.</p><div class="row"><button class="btn pri" ${goAttr("millForm",{})}>Add a mill</button></div></div>`:""}
   ${backupDue()?`<div class="note"><b>Back up to Google Drive.</b> ${settings().lastBackup?"Last backup "+fmtD(settings().lastBackup)+".":"No backup saved yet."} <button class="linkbtn" ${goAttr("backup",{})}>Back up now</button></div>`:""}
   <section class="panel"><div class="spread"><h2>Capture at the mill</h2><button class="linkbtn" ${goAttr("library",{})}>Best practices library</button></div><div class="cap">${CAPTURE.map(([v,ic,l,p])=>`<button ${goAttr(v,p||{})}><span class="ic">${ic}</span>${l}</button>`).join("")}</div></section>
@@ -506,7 +528,7 @@ VIEWS.home=()=>{
   <button class="panel" style="text-align:left;cursor:pointer" ${goAttr("search",{})}><span class="eyebrow">Search everything</span><span class="muted">Mills, machines, parameters, observations, best practices, photo captions…</span></button>
   <section class="panel"><div class="spread"><h2>Billing</h2><button class="linkbtn" data-tabgo="bills">Open billing</button></div>
     <div class="totals"><span>Outstanding${overdue?` (${overdue} overdue)`:""}</span><span class="v" style="color:${outstanding?"var(--bad)":"inherit"}">${rupee(outstanding)}</span><span>Visits not yet billed</span><span class="v">${unbilled}</span></div></section>
-  `,after(){const b=$("#sample");if(b)b.onclick=loadSample;document.querySelectorAll("[data-tabgo]").forEach(x=>x.onclick=()=>tab(x.dataset.tabgo));wireCopy()}};
+  `,after(){const b=$("#sample");wireInstall();if(b)b.onclick=loadSample;document.querySelectorAll("[data-tabgo]").forEach(x=>x.onclick=()=>tab(x.dataset.tabgo));wireCopy()}};
 };
 function visitItem(v){return `<button class="item" ${goAttr("visit",{id:v.id})}><div class="main"><div class="t">${esc(millName(v.millId))}</div><div class="s">${fmtD(v.date)}${v.start?" · "+esc(v.start):""} · ${esc(v.type||"")}${v.purpose?" · "+esc(v.purpose):""}</div></div><div class="r">${visitPill(v)}</div></button>`}
 

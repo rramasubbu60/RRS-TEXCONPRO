@@ -1,5 +1,12 @@
 {
+ "id": "/",
  "name": "RRS TEXCONPRO",
+ "lang": "en-IN",
+ "orientation": "any",
+ "categories": [
+  "business",
+  "productivity"
+ ],
  "short_name": "TEXCONPRO",
  "start_url": "./",
  "scope": "./",
