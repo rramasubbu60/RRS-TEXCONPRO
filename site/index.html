@@ -191,6 +191,8 @@ legend{font-family:var(--f-display);font-weight:700;padding:0 6px}
 .qbtn svg{width:20px;height:20px;fill:currentColor}
 .qbtn.call{background:var(--accent);color:var(--accent-ink)}
 .qbtn.wa{background:#1f7a4a;color:#fff}
+.qbtn.edit{background:var(--sunk);color:var(--muted);border:0;cursor:pointer}.qbtn.edit svg{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round}
+.chead{flex-wrap:nowrap}.chead .favbtn{margin-left:4px}
 .ghead{font-family:var(--f-display);font-weight:700;font-size:.85em;letter-spacing:.06em;color:var(--accent);padding:4px 2px 0}
 .chead{display:flex;gap:16px;align-items:flex-start}
 .chead>div{flex:1}
@@ -286,13 +288,17 @@ const rupee=p=>"₹"+inr(p);
 const inputRs=p=>p?(p/100).toFixed(2).replace(/\.00$/,""):"";
 const fyOf=iso=>{const[y,m]=iso.split("-").map(Number);const s=m>=4?y:y-1;return `${s}-${String((s+1)%100).padStart(2,"0")}`};
 const toast=msg=>{const t=document.createElement("div");t.className="toast";t.setAttribute("role","status");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2600)};
+function choose(msg,opts){return new Promise(res=>{const w=document.createElement("div");w.className="confirm";w.innerHTML=`<div class="box" role="dialog" aria-modal="true"><p style="margin:0">${msg}</p><div class="row" style="justify-content:flex-end">${opts.map(o=>`<button class="btn ${o.cls||""}" data-k="${o.k}">${esc(o.label)}</button>`).join("")}</div></div>`;w.addEventListener("click",e=>{const k=e.target.closest("[data-k]")?.dataset.k;if(k||e.target===w){w.remove();res(k||null)}});document.body.appendChild(w);w.querySelector(".btn.pri")?.focus()})}
+const normName=s=>String(s||"").toLowerCase().replace(/\b(mr|mrs|ms|dr|shri|sri|thiru|m\/s)\b\.?/g,"").replace(/\(.*?\)/g,"").replace(/[^a-z0-9]/g,"");
+function editDist(a,b){if(a===b)return 0;const m=a.length,n=b.length;if(Math.abs(m-n)>3)return 9;let p=Array.from({length:n+1},(_,j)=>j);for(let i=1;i<=m;i++){const c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}return p[n]}
+const similarName=(a,b)=>{const x=normName(a),y=normName(b);if(!x||!y)return false;if(x===y)return true;const d=editDist(x,y);return d<=(Math.max(x.length,y.length)>=8?2:1)};
 function ask(msg,okLabel,danger){return new Promise(res=>{const w=document.createElement("div");w.className="confirm";w.innerHTML=`<div class="box" role="dialog" aria-modal="true"><p style="margin:0">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn" data-a="0">Go back</button><button class="btn ${danger?"danger":"pri"}" data-a="1">${esc(okLabel)}</button></div></div>`;w.addEventListener("click",e=>{const a=e.target.dataset.a;if(a!==undefined||e.target===w){w.remove();res(a==="1")}});document.body.appendChild(w);w.querySelector('[data-a="1"]').focus()})}
 
 /* ---------- storage: Supabase (his own account) with offline cache ---------- */
 const COLLS=["mills","visits","invoices","payments","process","quality","production","machines","practices","notes","photos","plans","contacts"];
 const S={settings:{},photoData:{}};COLLS.forEach(c=>S[c]={});
 const SB_URL="https://kadmogqdalxvzekjajqt.supabase.co",SB_KEY="sb_publishable_SD-_Afw1sSLpHCVOj3dl-Q_-w24yGGN";
-let sb=null,me=null,mode="loading",loaded=0,downloads=true;
+let sb=null,me=null,mode="loading",loaded=0,downloads=true,shared=false,myRole="user";
 const photoCache={};
 /* tiny IndexedDB key-value store for the offline copy */
 const idb=(()=>{let dbp=null;const open=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open("rrs-texconpro",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}));
@@ -314,8 +320,8 @@ async function flush(){
   try{
     while(outbox.length){
       const op=outbox[0];let error;
-      if(op.op==="put")({error}=await sb.from("records").upsert({owner:me.id,coll:op.coll,id:op.id,data:op.data,updated_at:new Date().toISOString()},{onConflict:"owner,coll,id"}));
-      else ({error}=await sb.from("records").delete().match({owner:me.id,coll:op.coll,id:op.id}));
+      if(op.op==="put")({error}=await sb.from("records").upsert({owner:me.id,coll:op.coll,id:op.id,data:op.data,updated_at:new Date().toISOString(),...(shared?{updated_by:me.email}:{})},{onConflict:shared?"coll,id":"owner,coll,id"}));
+      else ({error}=await sb.from("records").delete().match(shared?{coll:op.coll,id:op.id}:{owner:me.id,coll:op.coll,id:op.id}));
       if(error)throw error;
       outbox.shift();await idb.set(outKey(),outbox);
     }
@@ -339,16 +345,18 @@ const dataUrlToBlob=d=>{const[h,b]=d.split(",");const bin=atob(b);const u=new Ui
 const blobToDataUrl=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsDataURL(b)});
 async function putPhotoData(id,data){
   photoCache[id]=data;
-  const{error}=await sb.storage.from("photos").upload(`${me.id}/${id}.jpg`,dataUrlToBlob(data),{contentType:"image/jpeg",upsert:true});
+  const{error}=await sb.storage.from("photos").upload(photoKey(id),dataUrlToBlob(data),{contentType:"image/jpeg",upsert:true});
   if(error){await idb.set("photo_"+id,data);throw new Error(navigator.onLine?error.message:"No internet. The photo is kept on this phone; add it again when online.")}
 }
 async function getPhotoData(id){
   if(photoCache[id])return photoCache[id];
-  const{data,error}=await sb.storage.from("photos").download(`${me.id}/${id}.jpg`);
+  let{data,error}=await sb.storage.from("photos").download(photoKey(id));
+  if((error||!data)&&shared){const p=await sb.rpc("photo_path",{pid:id});if(p.data)({data,error}=await sb.storage.from("photos").download(p.data))} // photos saved before sharing was switched on
   if(error||!data){return (await idb.get("photo_"+id))||""}
   return photoCache[id]=await blobToDataUrl(data);
 }
-async function delPhoto(id){delete photoCache[id];try{await sb.storage.from("photos").remove([`${me.id}/${id}.jpg`])}catch(e){}await del("photos",id)}
+const photoKey=id=>shared?`shared/${id}.jpg`:`${me.id}/${id}.jpg`;
+async function delPhoto(id){delete photoCache[id];try{await sb.storage.from("photos").remove([photoKey(id)])}catch(e){}await del("photos",id)}
 
 const DEFAULT_SETTINGS={bizName:"R. Ramasubramanian",consultantName:"R. Ramasubramanian",designation:"Textile Consultant",address:"1, A.K.M.G. Nagar, Opp. R.V.S. Working Women's Hostel,\nKarur Road, Dindigul - 624 001.",phone:"80547 78888",phone2:"94430 21399",email:"",gstin:"",prefix:"TC",nextNo:{},defaultFee:0,payTermsDays:30,bank:"",upi:"",acc1Name:"HDFC Bank",acc1Details:"",acc2Name:"ICICI Bank",acc2Details:"",billAccount:"1",lastBackup:"",signature:"",bigText:false,invoiceNote:"Kindly arrange payment as per the agreed terms."};
 const IDENT=["bizName","consultantName","designation","address","phone","phone2"];
@@ -367,7 +375,7 @@ async function loadAll(){
   Object.assign(S,fresh);saveCache();
 }
 function listen(){
-  sb.channel("records-"+me.id).on("postgres_changes",{event:"*",schema:"public",table:"records",filter:`owner=eq.${me.id}`},p=>{
+  sb.channel("records-"+me.id).on("postgres_changes",{event:"*",schema:"public",table:"records",...(shared?{}:{filter:`owner=eq.${me.id}`})},p=>{
     const r=p.new&&p.new.coll?p.new:p.old;if(!r||!r.coll)return;
     if(outbox.some(o=>o.coll===r.coll&&o.id===r.id))return; // our own pending change wins
     if(p.eventType==="DELETE"){if(S[r.coll])delete S[r.coll][r.id]}
@@ -377,6 +385,12 @@ function listen(){
 }
 async function startSession(user){
   me=user;mode="cloud";
+  // who may use the app is decided in the database (app_users list); older databases without the list run in single-user mode
+  const r=await sb.rpc("my_role");
+  if(r.error&&/my_role|PGRST202|function/i.test((r.error.message||"")+(r.error.code||""))){shared=false;myRole="admin"}
+  else if(r.error){if(!navigator.onLine){shared=true;myRole=(await idb.get("role_"+me.id))||"user"}else{toast("Couldn't check access: "+r.error.message)}}
+  else if(!r.data){$("#app").innerHTML=`<div class="authbox"><div class="authlogo">RRS<br>TEXCONPRO</div><div class="note"><b>${esc(me.email)}</b> doesn't have access to this app. Ask the administrator to add your email.</div><button class="btn" id="soNo">Sign out</button></div>`;document.querySelector("nav.tabs").hidden=true;$("#gearBtn").hidden=true;$("#soNo").onclick=async()=>{await sb.auth.signOut();location.reload()};return}
+  else{shared=true;myRole=r.data;idb.set("role_"+me.id,myRole)}
   outbox=(await idb.get(outKey()))||[];
   const cached=await idb.get(cacheKey());
   if(cached){Object.assign(S,cached);loaded=1;applyPrefs();render()}
@@ -391,17 +405,21 @@ function authScreen(msg){
   loaded=0;document.querySelector("nav.tabs").hidden=true;$("#backBtn").hidden=true;$("#gearBtn").hidden=true;setSync("");$("#title").textContent="RRS TEXCONPRO";
   $("#app").innerHTML=`<div class="authbox"><div class="authlogo">RRS<br>TEXCONPRO</div><p class="muted" style="margin:0;text-align:center">Textile consultancy records, billing and reports</p>
   ${msg?`<div class="note info">${msg}</div>`:""}
-  <form id="af" autocomplete="on"><div class="f"><label for="aemail">Email</label><input id="aemail" name="email" type="email" autocomplete="username" required></div>
+  <form id="af" autocomplete="on"><div class="f"><label for="aemail">Email</label><input id="aemail" name="email" type="email" autocomplete="username" inputmode="email" value="${esc((()=>{try{return localStorage.getItem("rrs_email")||""}catch(e){return ""}})())}" required></div>
   <div class="f"><label for="apass">Password</label><input id="apass" name="password" type="password" autocomplete="current-password" minlength="6" required></div>
+  <label class="check on" id="remL"><input type="checkbox" id="arem" checked><span>Remember my email on this phone</span></label>
   <button class="btn pri" type="submit" id="asub">Sign in</button>
   <div class="row" style="justify-content:space-between"><button type="button" class="linkbtn" id="aforgot">Forgot password?</button><button type="button" class="linkbtn" id="anew">First time? Create account</button></div></form></div>`;
   let creating=false;const f=$("#af");
+  $("#arem").onchange=e=>$("#remL").classList.toggle("on",e.target.checked);
+  if(f.elements.email.value)setTimeout(()=>f.elements.password.focus(),50);
   $("#anew").onclick=()=>{creating=!creating;$("#asub").textContent=creating?"Create account":"Sign in";$("#anew").textContent=creating?"Have an account? Sign in":"First time? Create account";f.elements.password.autocomplete=creating?"new-password":"current-password"};
   $("#aforgot").onclick=async()=>{const em=f.elements.email.value.trim();if(!em){toast("Type your email first");return}const{error}=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin});toast(error?error.message:"Password reset link sent to "+em)};
-  f.onsubmit=async e=>{e.preventDefault();const email=f.elements.email.value.trim(),password=f.elements.password.value;$("#asub").disabled=true;
+  f.onsubmit=async e=>{e.preventDefault();const email=f.elements.email.value.trim().toLowerCase(),password=f.elements.password.value;$("#asub").disabled=true;
+    try{if($("#arem").checked)localStorage.setItem("rrs_email",email);else localStorage.removeItem("rrs_email")}catch(_){}
     try{if(creating){const{data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin}});if(error)throw error;if(!data.session){authScreen(`Account created. Open the confirmation email sent to <b>${esc(email)}</b>, tap the link, then sign in here.`);return}}
       else{const{error}=await sb.auth.signInWithPassword({email,password});if(error)throw error}}
-    catch(err){toast(/Invalid login/i.test(err.message)?"Email or password is wrong":/not confirmed/i.test(err.message)?"Please confirm your email first (check your inbox)":err.message);$("#asub").disabled=false}};
+    catch(err){toast(/Invalid login/i.test(err.message)?"Email or password is wrong":/not confirmed/i.test(err.message)?"Please confirm your email first (check your inbox)":/saving new user|not allowed/i.test(err.message)?"This email isn't allowed to use the app. Ask the administrator.":err.message);$("#asub").disabled=false}};
 }
 function newPasswordScreen(){
   $("#app").innerHTML=`<div class="authbox"><h2>Set a new password</h2><form id="npf"><div class="f"><label for="np">New password</label><input id="np" type="password" minlength="6" autocomplete="new-password" required></div><button class="btn pri" type="submit">Save password</button></form></div>`;
@@ -444,6 +462,23 @@ function wireInstall(){
   const h=$("#instHide");if(h)h.onclick=()=>{try{localStorage.setItem("rrs_install_hide","1")}catch(e){}const p=$("#installP");if(p)p.remove()};
 }
 
+/* ---------- admin: who can use the app ---------- */
+function peoplePanel(){
+  if(!shared)return "";
+  return `<div class="panel" id="peopleP"><span class="eyebrow">People who can use the app</span>${myRole==="admin"?`<div id="plist" class="small muted">Loading…</div>
+  <form id="padd" class="row" style="flex-wrap:nowrap"><input id="pemail" type="email" placeholder="Add an email" aria-label="Email to add" style="flex:1;min-width:0"><select id="prole" aria-label="Role" style="width:auto"><option value="user">User</option><option value="admin">Admin</option></select><button class="btn pri" type="submit">Add</button></form>
+  <span class="small muted">Only these emails can create an account and see the records. Everyone listed shares the same records.</span>`:`<div class="small">You're signed in as a <b>user</b>. The administrator manages who can use the app.</div>`}</div>`;
+}
+async function wirePeople(){
+  if(!shared||myRole!=="admin"||!$("#plist"))return;
+  const load=async()=>{const{data,error}=await sb.from("app_users").select("email,role").order("role").order("email");if(error){$("#plist").textContent="Couldn't load the list: "+error.message;return}
+    $("#plist").outerHTML=`<div id="plist" class="list">${data.map(u=>`<div class="item" style="cursor:default"><div class="main"><div class="t" style="overflow-wrap:anywhere">${esc(u.email)}</div><div class="s">${u.role==="admin"?"Admin":"User"}${u.email===me.email?" · you":""}</div></div>${u.email===me.email?"":`<button class="linkbtn small" data-prm="${esc(u.email)}" style="color:var(--bad)">Remove</button>`}</div>`).join("")}</div>`;
+    document.querySelectorAll("[data-prm]").forEach(b=>b.onclick=async()=>{if(!(await ask(`Remove ${b.dataset.prm}? They won't be able to sign in or see records any more.`,"Remove",true)))return;const{error}=await sb.from("app_users").delete().eq("email",b.dataset.prm);toast(error?error.message:"Removed");load()})};
+  $("#padd").onsubmit=async e=>{e.preventDefault();const em=$("#pemail").value.trim().toLowerCase();if(!/^\S+@\S+\.\S+$/.test(em)){toast("Type a valid email");return}
+    const{error}=await sb.from("app_users").upsert({email:em,role:$("#prole").value});toast(error?error.message:`${em} can now create an account`);if(!error){$("#pemail").value="";load()}};
+  load();
+}
+
 /* ---------- derived data ---------- */
 const arr=c=>Object.values(S[c]);
 const millName=id=>S.mills[id]?.name||"Unknown mill";
@@ -470,10 +505,18 @@ function visitPill(v){
 let stack=[{v:"home"}];
 const TABS=[["home","Home",'<path d="M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z"/>'],["mills","Mills",'<path d="M3 21V10l5 3V10l5 3V6l8 4v11z"/><path d="M3 21h18"/>'],["contacts","Contacts",'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/>'],["visits","Visits",'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>'],["plan","Plan",'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M8 14h3M8 17h6"/>'],["reports","Reports",'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'],["bills","Billing",'<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>']];
 $("#gearBtn").onclick=()=>tab("settings");
-function go(v,p={}){if(v==="invoiceForm")VIEWS.invoiceForm.st=null;dirty=false;stack.push({v,...p});render();window.scrollTo(0,0)}
-function tab(v){dirty=false;stack=[{v}];render();window.scrollTo(0,0)}
-function back(){dirty=false;if(stack.length>1)stack.pop();render();window.scrollTo(0,0)}
-$("#backBtn").onclick=back;
+/* navigation: the on-screen Back and the phone's back gesture both step back one page, ending on Home */
+let navDepth=0,progBack=false;
+function pushHist(){try{history.pushState({rrs:Date.now()},"");navDepth++}catch(e){}}
+function go(v,p={}){if(v==="invoiceForm")VIEWS.invoiceForm.st=null;dirty=false;stack.push({v,...p});pushHist();render();window.scrollTo(0,0)}
+function tab(v){dirty=false;const atHome=stack.length===1&&stack[0].v==="home";stack=[{v}];if(!(v==="home"&&atHome))pushHist();render();window.scrollTo(0,0)}
+function doBack(){dirty=false;if(stack.length>1)stack.pop();else if(stack[0].v!=="home")stack=[{v:"home"}];render();window.scrollTo(0,0)}
+function back(){if(navDepth>0){progBack=true;try{history.back();return}catch(e){progBack=false}}doBack()}
+const unsaved=()=>dirty&&$("#app form");
+$("#backBtn").onclick=async()=>{if(unsaved()&&!(await ask("You have changes that aren't saved. Leave this page without saving?","Leave without saving",true)))return;back()};
+window.addEventListener("popstate",async()=>{navDepth=Math.max(0,navDepth-1);const prog=progBack;progBack=false;
+  if(!prog&&unsaved()){if(!(await ask("You have changes that aren't saved. Leave this page without saving?","Leave without saving",true))){pushHist();return}}
+  doBack()});
 $("#tabs").innerHTML=TABS.map(([k,l,ic])=>`<button data-tab="${k}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${ic}</svg>${l}</button>`).join("");
 $("#tabs").onclick=e=>{const b=e.target.closest("[data-tab]");if(b)tab(b.dataset.tab)};
 
@@ -482,7 +525,7 @@ function render(){
   if(!loaded)return;
   if(dirty&&$("#app form"))return; // don't wipe a form with unsaved typing; navigation clears this
   const cur=stack[stack.length-1];
-  $("#backBtn").hidden=stack.length<2;
+  $("#backBtn").hidden=stack.length<2&&stack[0].v==="home";
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on",b.dataset.tab===stack[0].v));
   const V=VIEWS[cur.v]||VIEWS.home;const out=V(cur);
   $("#title").textContent=out.title;$("#app").innerHTML=out.html;
@@ -665,7 +708,9 @@ VIEWS.millForm=({id})=>{
   <div class="f"><label for="notes">Remarks</label><textarea id="notes" name="notes" style="min-height:60px">${esc(m.notes)}</textarea></div>
   <button type="submit" class="btn pri">Save mill</button></form>`,
   after(){const f=$("#mf");f.onsubmit=async e=>{e.preventDefault();const d=formData(f);const nm={...m,...d,name:d.name.trim(),fee:toPaise(d.fee),payTermsDays:parseInt(d.payTermsDays)||30,updated:Date.now()};
-    const dup=arr("mills").find(x=>x.id!==nm.id&&x.name.trim().toLowerCase()===nm.name.toLowerCase());if(dup&&!(await ask(`A mill named "${dup.name}" already exists. Save another one anyway?`,"Save anyway")))return;
+    const dup=arr("mills").find(x=>x.id!==nm.id&&similarName(x.name,nm.name));
+    if(dup){const k=await choose(`<b>${esc(dup.name)}</b> already exists${normName(dup.name)===normName(nm.name)?"":" with a very similar name"}. Is this the same mill?`,[{k:"edit",label:"Yes, edit that one",cls:"pri"},{k:"new",label:"No, it's a different mill"}]);
+      if(k==="edit"){dirty=false;stack.pop();stack.push({v:"millForm",id:dup.id});render();toast("Opened the existing mill. Make your corrections here.");return}if(k!=="new")return}
     dirty=false;await put("mills",nm);toast("Mill saved");stack.pop();if(!id)stack.push({v:"mill",id:nm.id});render()}}};
 };
 
@@ -925,14 +970,15 @@ VIEWS.settings=()=>{const s=settings();return{title:"Settings",html:`
   <div class="panel"><span class="eyebrow">Signature</span>${s.signature?`<img src="${s.signature}" alt="Your signature" style="max-height:70px;background:#fff;padding:6px;border-radius:6px;align-self:flex-start">`:`<p class="muted" style="margin:0">No signature uploaded yet.</p>`}
     <label class="btn" for="sigFile" style="cursor:pointer">${s.signature?"Replace signature":"Upload signature photo"}</label><input id="sigFile" type="file" accept="image/*" hidden>
     <span class="hint small muted">Sign on white paper, take a clear photo, then upload. The app removes the paper background. It's added only to issued bills. This is a picture of your signature, not a certified digital signature (DSC).</span></div>
-  <div class="panel"><span class="eyebrow">Account</span><div>Signed in as <b>${esc(me?.email||"")}</b></div><div class="small muted">Your records are stored in your own Supabase database and sync between your phone and computer.</div><button class="btn" id="signout">Sign out</button></div>
+  <div class="panel"><span class="eyebrow">Account</span><div>Signed in as <b>${esc(me?.email||"")}</b>${shared?` (${myRole==="admin"?"Admin":"User"})`:""}</div><div class="small muted">Records are stored in your own Supabase database and sync between phones and computers.</div><button class="btn" id="signout">Sign out</button></div>
+  ${peoplePanel()}
   <div class="panel"><span class="eyebrow">Display</span><label class="check ${s.bigText?"on":""}"><input type="checkbox" id="big" ${s.bigText?"checked":""}><span>Larger text</span></label></div>
   <div class="panel"><span class="eyebrow">Google Drive backup</span><p class="small muted" style="margin:0">${settings().lastBackup?"Last backup "+fmtD(settings().lastBackup)+".":"No backup saved yet."}</p><button class="btn pri" ${goAttr("backup",{})}>Back up to Google Drive</button></div>
   <div class="panel"><span class="eyebrow">Restore & raw backup</span><p class="small muted" style="margin:0">${mode==="cloud"?"Your records are saved to your private cloud store and sync between your phone and computer when signed in.":"Records are saved on this device only. Download a backup regularly."}</p>
     <div class="row"><button class="btn" id="bk">Download full backup</button><label class="btn" for="rs" style="cursor:pointer">Restore from backup</label><input id="rs" type="file" accept=".json,.zip,application/json,application/zip" hidden></div>
     ${arr("mills").some(m=>m.sample)?`<button class="btn danger" id="clrSample">Remove sample data</button>`:""}</div>`,
   after(){
-    $("#signout").onclick=signOut;$("#big").onchange=e=>putSettings({...settings(),bigText:e.target.checked});
+    $("#signout").onclick=signOut;wirePeople();$("#big").onchange=e=>putSettings({...settings(),bigText:e.target.checked});
     $("#sigFile").onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();img.onload=()=>{const sc=Math.min(1,600/img.width);const c=document.createElement("canvas");c.width=Math.round(img.width*sc);c.height=Math.round(img.height*sc);const x=c.getContext("2d");x.drawImage(img,0,0,c.width,c.height);
       const d=x.getImageData(0,0,c.width,c.height),px=d.data;for(let i=0;i<px.length;i+=4){const l=.3*px[i]+.59*px[i+1]+.11*px[i+2];if(l>170)px[i+3]=0;else{px[i]=px[i+1]=Math.min(px[i],60);px[i+2]=Math.min(px[i+2],110)}}x.putImageData(d,0,0);
       putSettings({...settings(),signature:c.toDataURL("image/png")}).then(ok=>ok&&toast("Signature saved"))};img.onerror=()=>toast("That file isn't a readable image");img.src=URL.createObjectURL(f)};
@@ -1508,7 +1554,7 @@ function quickBtns(c){
 }
 function contactRow(c){
   const target=c.id?goAttr("contact",{id:c.id}):goAttr("contactForm",{millId:c.millId,prefill:{name:c.name,role:c.role,phone:c.phone,email:c.email}});
-  return `<div class="crow"><button class="cmain" ${target}>${avatar(c)}<span class="main"><span class="t">${c.fav?'<span class="star" aria-label="Favourite">★</span> ':""}${esc(c.name)}</span><span class="s">${esc([c.role,orgOf(c)].filter(Boolean).join(" · "))}${c.fromMill?" · tap to add":""}</span></span></button>${quickBtns(c)}</div>`;
+  return `<div class="crow"><button class="cmain" ${target}>${avatar(c)}<span class="main"><span class="t">${c.fav?'<span class="star" aria-label="Favourite">★</span> ':""}${esc(c.name)}</span><span class="s">${esc([c.role,orgOf(c)].filter(Boolean).join(" · "))}${c.fromMill?" · tap to add":""}</span></span></button>${quickBtns(c)}${c.id?`<button class="qbtn edit" ${goAttr("contactForm",{id:c.id})} aria-label="Edit ${esc(c.name)}" title="Edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 00-4-4L4 16v4z"/></svg></button>`:""}</div>`;
 }
 function contactActions(c){
   const ph=c.phone,wa=waNumber(c.whatsapp||c.phone);
@@ -1575,7 +1621,7 @@ VIEWS.contact=({id})=>{
   const vcard=`*${c.name}*${c.role?"\n"+c.role:""}${orgOf(c)?"\n"+orgOf(c):""}${c.phone?"\nMobile: "+fmtPhone(c.phone):""}${c.email?"\nEmail: "+c.email:""}`;
   return{title:c.name,html:`
   <div class="chead">${avatar(c,72)}<div style="min-width:0"><h2 style="font-size:1.3em">${esc(c.name)}</h2><div class="muted">${esc([c.role,c.dept].filter(Boolean).join(" · "))}</div>${c.millId?`<button class="linkbtn" ${goAttr("mill",{id:c.millId,t:"Contacts"})}>${esc(millName(c.millId))}</button>`:c.company?`<div>${esc(c.company)}</div>`:""}<div class="row" style="margin-top:6px;gap:6px"><span class="pill">${esc(catOf(c))}</span>${c.tags?c.tags.split(",").map(t=>t.trim()).filter(Boolean).map(t=>`<span class="pill acc">${esc(t)}</span>`).join(""):""}</div></div>
-  <button class="favbtn ${c.fav?"on":""}" id="fav" aria-pressed="${!!c.fav}" aria-label="${c.fav?"Remove from favourites":"Add to favourites"}">${c.fav?"★":"☆"}</button></div>
+  <button class="favbtn" ${goAttr("contactForm",{id})} aria-label="Edit contact" title="Edit" style="font-size:1em">✎</button><button class="favbtn ${c.fav?"on":""}" id="fav" aria-pressed="${!!c.fav}" aria-label="${c.fav?"Remove from favourites":"Add to favourites"}">${c.fav?"★":"☆"}</button></div>
   ${contactActions(c)}
   <div class="panel"><dl class="kv">${[["Mobile",c.phone?fmtPhone(c.phone):""],["WhatsApp",c.whatsapp&&digits(c.whatsapp)!==digits(c.phone)?fmtPhone(c.whatsapp):""],["Other number",c.altPhone?fmtPhone(c.altPhone):""],["Email",c.email],["Address",c.address],["Birthday",c.birthday?fmtD(c.birthday).slice(0,6):""],["Last contacted",lastContact(c)]].filter(x=>x[1]).map(x=>`<dt>${x[0]}</dt><dd>${esc(x[1])}</dd>`).join("")}</dl>
   ${c.altPhone?`<a class="btn" href="tel:${esc(digits(c.altPhone))}">Call other number</a>`:""}</div>
@@ -1628,8 +1674,10 @@ VIEWS.contactForm=({id,millId,prefill})=>{
     f.elements.millId.onchange=()=>{$("#compWrap").hidden=!!f.elements.millId.value;if(f.elements.millId.value&&!f.elements.category.value)f.elements.category.value="Mill staff"};
     f.onsubmit=async e=>{e.preventDefault();const d=formData(f);d.name=d.name.trim();
       if(d.phone&&digits(d.phone).replace(/^\+?91/,"").length<10&&!(await ask("This number looks short. Save anyway?","Save anyway")))return;
-      const dup=d.phone&&arr("contacts").find(x=>x.id!==r.id&&digits(x.phone).slice(-10)===digits(d.phone).slice(-10));
-      if(dup&&!(await ask(`${dup.name} already has this number. Save another contact anyway?`,"Save anyway")))return;
+      const dup=arr("contacts").find(x=>x.id!==r.id&&((d.phone&&digits(x.phone).slice(-10)===digits(d.phone).slice(-10))||(similarName(x.name,d.name)&&(!d.millId||!x.millId||x.millId===d.millId))));
+      if(dup){const why=d.phone&&digits(dup.phone).slice(-10)===digits(d.phone).slice(-10)?"already has this number":normName(dup.name)===normName(d.name)?"is already saved":"is already saved with a very similar name";
+        const k=await choose(`<b>${esc(dup.name)}</b>${dup.millId?` (${esc(millName(dup.millId))})`:""} ${why}. Is this the same person?`,[{k:"edit",label:"Yes, edit that one",cls:"pri"},{k:"new",label:"No, save as new"}]);
+        if(k==="edit"){dirty=false;stack.pop();stack.push({v:"contactForm",id:dup.id});render();toast("Opened the existing contact. Make your corrections here.");return}if(k!=="new")return}
       if($("#waSame").checked)d.whatsapp="";if(d.millId)d.company="";d.fav=$("#favc").checked;
       const{prefill:_,...base}=r;dirty=false;await put("contacts",{...base,...d,updated:Date.now()});toast("Contact saved");stack.pop();stack.push({v:"contact",id:r.id});render()};
   }};
